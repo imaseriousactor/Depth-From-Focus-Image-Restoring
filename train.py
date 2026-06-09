@@ -144,7 +144,7 @@ def main():
         if val_metrics['loss'] < best_val_loss:
             best_val_loss = val_metrics['loss']
             torch.save(model.state_dict(), f"checkpoints/{model_name}_best.pth")
-            print(f"  ✓ Saved best model")
+            print(f"   Saved best model")
         
         print()
     

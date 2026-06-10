@@ -2,23 +2,33 @@ import os
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+import torchvision.transforms as T
 import numpy as np
 from tqdm import tqdm
 
 from data.nyu_depth_dataset import NYUDepthDataset
 from models.unet import UNet
 from models.attention_unet import AttentionUNet
-
+from models.vit_hybrid import ViTHybrid
 
 def get_model(model_name):
     if model_name == "unet":
         return UNet(in_channels=3, out_channels=1)
     elif model_name == "attention_unet":
         return AttentionUNet(in_channels=3, out_channels=1)
+    elif model_name == "vit_hybrid":
+        return ViTHybrid(in_channels=3, out_channels=1, embed_dim=64)
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
+class ResizeTransform:
+    def __init__(self, size=(128, 192)):
+        self.resize = T.Resize(size)
+    
+    def __call__(self, sample):
+        sample['image'] = self.resize(sample['image'])
+        sample['depth'] = self.resize(sample['depth'])
+        return sample
 
 def compute_metrics(pred, target):
     pred = pred.squeeze(1)
@@ -35,7 +45,6 @@ def compute_metrics(pred, target):
         delta1 = torch.tensor(0.0)
     
     return rmse.item(), mae.item(), delta1.item()
-
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
@@ -54,7 +63,6 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         total_loss += loss.item()
     
     return total_loss / len(dataloader)
-
 
 def validate(model, dataloader, criterion, device):
     model.eval()
@@ -86,53 +94,31 @@ def validate(model, dataloader, criterion, device):
         'delta1': total_delta1 / n
     }
 
-
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    model_name = "attention_unet"
-    epochs = 50
-    batch_size = 4
+    model_name = "vit_hybrid"
+    epochs = 30
+    batch_size = 2  
     learning_rate = 1e-4
     
-    train_dir = "data/raw/train-000000/official"
     val_dir = "data/raw/val/official"
     
-    if not os.path.exists(train_dir):
-        print(f"Warning: Training directory not found at {train_dir}")
-        print("Using validation set for both training and validation (demo mode)")
-        train_dir = val_dir
-    
-    train_dataset = NYUDepthDataset(train_dir)
-    val_dataset = NYUDepthDataset(val_dir)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    val_dataset = NYUDepthDataset(val_dir, transform=ResizeTransform((128, 192)))
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     
     model = get_model(model_name).to(device)
     criterion = nn.L1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
-    
-    writer = SummaryWriter(f"runs/{model_name}")
-    
-    best_val_loss = float('inf')
     
     print(f"Training {model_name} for {epochs} epochs...")
-    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    print(f"Image size: 128x192, Batch size: {batch_size}")
+    print(f"Val samples: {len(val_dataset)}")
     
     for epoch in range(epochs):
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss = train_one_epoch(model, val_loader, criterion, optimizer, device)
         val_metrics = validate(model, val_loader, criterion, device)
-        
-        scheduler.step(val_metrics['loss'])
-        
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Loss/val', val_metrics['loss'], epoch)
-        writer.add_scalar('Metrics/RMSE', val_metrics['rmse'], epoch)
-        writer.add_scalar('Metrics/MAE', val_metrics['mae'], epoch)
-        writer.add_scalar('Metrics/delta1', val_metrics['delta1'], epoch)
         
         print(f"Epoch {epoch+1}/{epochs}")
         print(f"  Train Loss: {train_loss:.4f}")
@@ -141,16 +127,10 @@ def main():
         print(f"  Val MAE:    {val_metrics['mae']:.4f}")
         print(f"  Val δ1:     {val_metrics['delta1']:.4f}")
         
-        if val_metrics['loss'] < best_val_loss:
-            best_val_loss = val_metrics['loss']
-            torch.save(model.state_dict(), f"checkpoints/{model_name}_best.pth")
-            print(f"   Saved best model")
-        
+        torch.save(model.state_dict(), f"checkpoints/{model_name}_best.pth")
         print()
     
-    writer.close()
     print("Training completed!")
-
 
 if __name__ == "__main__":
     os.makedirs("checkpoints", exist_ok=True)

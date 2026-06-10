@@ -98,7 +98,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    model_name = "vit_hybrid"
+    model_name = "attention_unet"
     epochs = 30
     batch_size = 2  
     learning_rate = 1e-4

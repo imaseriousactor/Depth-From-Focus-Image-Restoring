@@ -124,13 +124,15 @@ python train.py
 ### Оценка
 
 ```bash
-
+# Сравнить все модели и сгенерировать визуализации
+python evaluate.py
 ```
 
 ### Веб-демонстрация
 
 ```bash
-12
+# Запустить интерфейс Gradio
+python app/app.py
 ```
 
 **Живое демо**: https://huggingface.co/spaces/YOUR_USERNAME/depth-estimation-demo (ссылка будет добавлена)

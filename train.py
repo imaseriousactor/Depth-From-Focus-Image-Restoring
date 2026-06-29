@@ -1,7 +1,7 @@
 import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import torchvision.transforms as T
 import numpy as np
 from tqdm import tqdm
@@ -10,6 +10,9 @@ from data.nyu_depth_dataset import NYUDepthDataset
 from models.unet import UNet
 from models.attention_unet import AttentionUNet
 from models.vit_hybrid import ViTHybrid
+
+# Раскомментируй, когда создашь data/diode_dataset.py
+# from data.diode_dataset import DIODEDepthDataset
 
 def get_model(model_name):
     if model_name == "unet":
@@ -21,6 +24,7 @@ def get_model(model_name):
     else:
         raise ValueError(f"Unknown model: {model_name}")
 
+
 class ResizeTransform:
     def __init__(self, size=(128, 192)):
         self.resize = T.Resize(size)
@@ -29,6 +33,7 @@ class ResizeTransform:
         sample['image'] = self.resize(sample['image'])
         sample['depth'] = self.resize(sample['depth'])
         return sample
+
 
 def compute_metrics(pred, target):
     pred = pred.squeeze(1)
@@ -45,6 +50,7 @@ def compute_metrics(pred, target):
         delta1 = torch.tensor(0.0)
     
     return rmse.item(), mae.item(), delta1.item()
+
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
@@ -63,6 +69,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         total_loss += loss.item()
     
     return total_loss / len(dataloader)
+
 
 def validate(model, dataloader, criterion, device):
     model.eval()
@@ -94,44 +101,83 @@ def validate(model, dataloader, criterion, device):
         'delta1': total_delta1 / n
     }
 
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    model_name = "attention_unet"
+    # ===== НАСТРОЙКИ =====
+    model_name = "attention_unet"  # unet / attention_unet / vit_hybrid
     epochs = 30
-    batch_size = 2  
+    batch_size = 4
     learning_rate = 1e-4
+    img_size = (256, 384)  # Для ViT меняй на (128, 192)
     
-    val_dir = "data/raw/val/official"
+    # ===== ПУТИ К ДАННЫМ =====
+    nyu_train_dir = "data/raw/train-000000/official"  # NYU train
+    nyu_val_dir = "data/raw/val/official"              # NYU val
+    diode_hdf5_path = "data/diode_hdf5/diode_train.hdf5"  # Раскомментируй когда будет DIODE
     
-    val_dataset = NYUDepthDataset(val_dir, transform=ResizeTransform((128, 192)))
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    # ===== ДАТАСЕТЫ =====
+    resize = ResizeTransform(img_size)
     
+    # NYU train
+    nyu_train = NYUDepthDataset(nyu_train_dir, transform=resize)
+    
+    # DIODE train (раскомментируй когда создашь DIODEDataset)
+    diode_train = DIODEDepthDataset(diode_hdf5_path, img_size=img_size)
+    train_dataset = ConcatDataset([nyu_train, diode_train])
+    
+    # Пока используем только NYU
+    train_dataset = nyu_train
+    
+    # NYU val
+    val_dataset = NYUDepthDataset(nyu_val_dir, transform=resize)
+    
+    # ===== DATALOADERS =====
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    
+    print(f"📦 Train samples: {len(train_dataset)}")
+    print(f"📦 Val samples:   {len(val_dataset)}")
+    
+    # ===== МОДЕЛЬ =====
     model = get_model(model_name).to(device)
     criterion = nn.L1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
-    print(f"Training {model_name} for {epochs} epochs...")
-    print(f"Image size: 128x192, Batch size: {batch_size}")
-    print(f"Val samples: {len(val_dataset)}")
+    os.makedirs("checkpoints", exist_ok=True)
+    best_model_path = f"checkpoints/{model_name}_best.pth"
+    best_val_loss = float('inf')
     
+    print(f"\n🚀 Training {model_name} for {epochs} epochs...")
+    print(f"Image size: {img_size}, Batch size: {batch_size}")
+    
+    # ===== ЦИКЛ ОБУЧЕНИЯ =====
     for epoch in range(epochs):
-        train_loss = train_one_epoch(model, val_loader, criterion, optimizer, device)
+        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_metrics = validate(model, val_loader, criterion, device)
         
-        print(f"Epoch {epoch+1}/{epochs}")
+        scheduler.step(val_metrics['loss'])
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        print(f"\nEpoch {epoch+1}/{epochs} | LR: {current_lr:.6f}")
         print(f"  Train Loss: {train_loss:.4f}")
         print(f"  Val Loss:   {val_metrics['loss']:.4f}")
         print(f"  Val RMSE:   {val_metrics['rmse']:.4f}")
         print(f"  Val MAE:    {val_metrics['mae']:.4f}")
         print(f"  Val δ1:     {val_metrics['delta1']:.4f}")
         
-        torch.save(model.state_dict(), f"checkpoints/{model_name}_best.pth")
-        print()
+        # Сохраняем только лучший чекпоинт
+        if val_metrics['loss'] < best_val_loss:
+            best_val_loss = val_metrics['loss']
+            torch.save(model.state_dict(), best_model_path)
+            print(f"  💾 Saved best model (val_loss={best_val_loss:.4f})")
     
-    print("Training completed!")
+    print(f"\n✅ Training completed! Best val loss: {best_val_loss:.4f}")
+    print(f"💾 Model saved at: {best_model_path}")
+
 
 if __name__ == "__main__":
-    os.makedirs("checkpoints", exist_ok=True)
     main()

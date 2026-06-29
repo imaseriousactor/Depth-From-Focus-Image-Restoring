@@ -1,92 +1,103 @@
 ﻿import os
 import torch
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
+import torch.nn as nn
+from torch.utils.data import DataLoader
+import h5py
 import numpy as np
-from PIL import Image
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import torchvision.transforms as T
 
 from data.nyu_depth_dataset import NYUDepthDataset
 from models.unet import UNet
 from models.attention_unet import AttentionUNet
 from models.vit_hybrid import ViTHybrid
 
-def load_model(model_name, checkpoint_path, device):
-    if model_name == "unet":
-        model = UNet(in_channels=3, out_channels=1)
-    elif model_name == "attention_unet":
-        model = AttentionUNet(in_channels=3, out_channels=1)
-    elif model_name == "vit_hybrid":
-        model = ViTHybrid(in_channels=3, out_channels=1, embed_dim=64)
+MODEL_CONFIGS = {
+    "unet": {"class": UNet, "path": "checkpoints/unet_best.pth", "img_size": (256, 384)},
+    "attention_unet": {"class": AttentionUNet, "path": "checkpoints/attention_unet_best.pth", "img_size": (256, 384)},
+    "vit_hybrid": {"class": ViTHybrid, "path": "checkpoints/vit_hybrid_best.pth", "img_size": (128, 192)}
+}
+
+def load_model(name, device):
+    cfg = MODEL_CONFIGS[name]
+    model = cfg["class"](in_channels=3, out_channels=1)
+    if os.path.exists(cfg["path"]):
+        model.load_state_dict(torch.load(cfg["path"], map_location=device))
+     
     else:
-        raise ValueError(f"Unknown model: {model_name}")
-        
-    if os.path.exists(checkpoint_path):
-        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-        print(f" Loaded {model_name} from {checkpoint_path}")
-    else:
-        print(f" Checkpoint not found for {model_name} at {checkpoint_path}")
-        
+        print(f" No weights for {name}")
     model.to(device)
     model.eval()
-    return model
+    return model, cfg["img_size"]
 
-def get_prediction(model, image_tensor, device, target_size=(480, 640)):
-    with torch.no_grad():
-        # Resize input to model's expected size if needed (simplified here)
-        img = image_tensor.unsqueeze(0).to(device)
-        pred = model(img).squeeze(0).squeeze(0).cpu()
-        # Resize prediction back to original image size for visualization
-        pred = F.interpolate(pred.unsqueeze(0).unsqueeze(0), size=target_size, mode='bilinear', align_corners=True).squeeze()
-    return pred
+def compute_metrics(pred, target):
+    pred = pred.squeeze(1)
+    target = target.squeeze(1)
+    
+    rmse = torch.sqrt(torch.mean((pred - target) ** 2))
+    mae = torch.mean(torch.abs(pred - target))
+    
+    mask = target > 0
+    ratio = torch.max(pred[mask] / target[mask], target[mask] / pred[mask])
+    delta1 = (ratio < 1.25).float().mean()
+    
+    return rmse.item(), mae.item(), delta1.item()
 
-def compare_models():
+def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    data_dir = "data/raw/val/official"
+    val_dir = "data/raw/val/official"
     
-    # Load datasets and models
-    dataset = NYUDepthDataset(data_dir)
+    models = {}
+    for name in MODEL_CONFIGS:
+        model, img_size = load_model(name, device)
+        models[name] = (model, img_size)
     
-    models = {
-        "UNet": load_model("unet", "checkpoints/unet_best.pth", device),
-        "Attention UNet": load_model("attention_unet", "checkpoints/attention_unet_best.pth", device),
-        "ViT Hybrid": load_model("vit_hybrid", "checkpoints/vit_hybrid_best.pth", device)
-    }
+    print("\n" + "="*60)
+    print("МЕТРИКИ")
+    print("="*60)
     
-    # Pick 3 random images to visualize
-    indices = [0, 10, 50] 
+    results = {}
+    val_dataset = NYUDepthDataset(val_dir, img_size=(256, 384))
+    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
     
-    fig, axes = plt.subplots(3, 5, figsize=(20, 12))
-    
-    for row, idx in enumerate(indices):
-        sample = dataset[idx]
-        image = sample['image']
-        true_depth = sample['depth'].squeeze(0)
+    for name, (model, img_size) in models.items():
+        print(f"\n{name.upper()}")
+        total_rmse = total_mae = total_delta1 = 0
+        n = 0
         
-        # Original Image
-        axes[row, 0].imshow(image.permute(1, 2, 0))
-        axes[row, 0].set_title(f"Original #{idx}")
-        axes[row, 0].axis('off')
+        with torch.no_grad():
+            for batch in val_loader:
+                images = batch['image'].to(device)
+                depths = batch['depth'].to(device)
+                
+                if img_size != (256, 384):
+                    images = torch.nn.functional.interpolate(images, size=img_size, mode='bilinear')
+                
+                outputs = model(images)
+                outputs = torch.nn.functional.interpolate(outputs, size=depths.shape[2:], mode='bilinear')
+                
+                rmse, mae, delta1 = compute_metrics(outputs, depths)
+                total_rmse += rmse
+                total_mae += mae
+                total_delta1 += delta1
+                n += 1
         
-        # Ground Truth
-        axes[row, 1].imshow(true_depth, cmap='magma')
-        axes[row, 1].set_title("Ground Truth")
-        axes[row, 1].axis('off')
+        results[name] = {
+            "RMSE": total_rmse / n,
+            "MAE": total_mae / n,
+            "δ1": total_delta1 / n
+        }
         
-        # Predictions
-        for col, (name, model) in enumerate(models.items(), start=2):
-            if model is not None:
-                pred = get_prediction(model, image, device, target_size=(image.shape[1], image.shape[2]))
-                pred_norm = (pred - pred.min()) / (pred.max() - pred.min() + 1e-8)
-                axes[row, col].imshow(pred_norm, cmap='magma')
-                axes[row, col].set_title(name)
-            else:
-                axes[row, col].text(0.5, 0.5, "No weights", ha='center', va='center')
-            axes[row, col].axis('off')
-            
-    plt.tight_layout()
-    plt.savefig("notebooks/outputs/model_comparison.png", dpi=150)
-    plt.show()
-    print(" Сравнение сохранено в notebooks/outputs/model_comparison.png")
+        print(f"  RMSE: {results[name]['RMSE']:.4f}")
+        print(f"  MAE:  {results[name]['MAE']:.4f}")
+        print(f"  δ1:   {results[name]['δ1']:.4f}")
+    
+    # Таблица
+    print(f"{'Model':<20} {'RMSE':>10} {'MAE':>10} {'δ1':>10}")
+    print("-" * 52)
+    for name, m in results.items():
+        print(f"{name:<20} {m['RMSE']:>10.4f} {m['MAE']:>10.4f} {m['δ1']:>10.4f}")
 
 if __name__ == "__main__":
-    compare_models()
+    main()

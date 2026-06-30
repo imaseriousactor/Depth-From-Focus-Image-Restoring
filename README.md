@@ -72,13 +72,12 @@ Vision Transformer энкодер + CNN декодер.
 
 ### Количественные результаты
 
-| Модель | Train Loss | Val Loss | RMSE | MAE | δ1 |
-|--------|-----------|----------|------|-----|-----|
-| **U-Net** | TBD | TBD | TBD | TBD | TBD |
-| Attention U-Net | TBD | TBD | TBD | TBD | TBD |
-| ViT Hybrid | TBD | TBD | TBD | TBD | TBD |
+| Модель | NYU RMSE (м) | NYU MAE (м) | NYU $\delta_1$ (%) | DIODE RMSE (м) | DIODE MAE (м) | DIODE $\delta_1$ (%) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **UNet** | 1.347 | 1.038 | 38.3 | 11.431 | 8.698 | 22.8 |
+| **Attention UNet** | 1.474 | 1.128 | 35.5 | **11.376** | **8.603** | **22.9** |
+| **ViT Hybrid** | **1.330** | **1.025** | **39.4** | 12.084 | 9.258 | 17.7 |
 
-*Результаты будут обновлены после завершения обучения на Kaggle GPU.*
 
 ### Качественный анализ
 
@@ -98,7 +97,7 @@ Vision Transformer энкодер + CNN декодер.
 
 ```bash
 # Клонировать репозиторий
-git clone https://github.com/YOUR_USERNAME/Depth-From-Focus-Image-Restoring.git
+git clone https://github.com/imaseriousactor/Depth-From-Focus-Image-Restoring.git
 cd Depth-From-Focus-Image-Restoring
 
 # Установить зависимости
@@ -135,7 +134,7 @@ python evaluate.py
 python app/app.py
 ```
 
-**Живое демо**: https://huggingface.co/spaces/YOUR_USERNAME/depth-estimation-demo (ссылка будет добавлена)
+**Живое демо**: \https://huggingface.co/spaces/imaseriousactor/depth-estimation-demo
 
 ## Структура проекта
 
